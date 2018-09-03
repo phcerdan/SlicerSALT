@@ -142,7 +142,7 @@ set(${extension_name}_SOURCE_DIR "${CMAKE_BINARY_DIR}/${extension_name}")
 FetchContent_Populate(${extension_name}
   SOURCE_DIR     ${${extension_name}_SOURCE_DIR}
   GIT_REPOSITORY ${EP_GIT_PROTOCOL}://github.com/KitwareMedical/SRepExtension
-  GIT_TAG        df8b732c16da93a43faaec9cce99382ed5fb0059
+  GIT_TAG        af90b5924a5257bcb27c4c4875e01a34b4c26d75 # 2018-09-02
   GIT_PROGRESS   1
   QUIET
   )
