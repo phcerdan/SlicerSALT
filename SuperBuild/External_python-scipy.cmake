@@ -99,7 +99,6 @@ ExternalProject_Execute(${proj} \"install\" \"${PYTHON_EXECUTABLE}\" setup.py in
   # Sanity checks
 
   foreach(varname IN ITEMS
-      python_DIR
       PYTHON_SITE_PACKAGES_SUBDIR
       )
     if("${${varname}}" STREQUAL "")
