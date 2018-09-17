@@ -3,6 +3,7 @@ from slicer.ScriptedLoadableModule import (ScriptedLoadableModule,
                                            ScriptedLoadableModuleLogic,
                                            ScriptedLoadableModuleWidget,
                                            ScriptedLoadableModuleTest)
+from slicer.util import NodeModify, VTKObservationMixin
 from collections import Counter
 import csv
 import logging
@@ -11,6 +12,7 @@ import os
 #
 # DataImporter
 #
+# TODO: Observe the segmentationNodes, and call populateTopologyDict if any change.
 
 class DataImporter(ScriptedLoadableModule):
   """Uses ScriptedLoadableModule base class, available at:
@@ -155,8 +157,8 @@ class DataImporterLogic(ScriptedLoadableModuleLogic):
       return False
 
     # Add to the dicts only if succesful
-    self.labelMapDict[fileName] = labelMapNode
-    self.segmentationDict[fileName] = segmentationNode
+    self.labelMapDict[labelMapNode.GetName()] = labelMapNode
+    self.segmentationDict[segmentationNode.GetName()] = segmentationNode
     self.labelRangeInCohort = labelRange
     return True
 
@@ -196,8 +198,8 @@ class DataImporterLogic(ScriptedLoadableModuleLogic):
       return False
 
     # Add to the dicts only if succesful
-    self.modelDict[fileName] = modelNode
-    self.segmentationDict[fileName] = segmentationNode
+    self.modelDict[modelNode.GetName()] = modelNode
+    self.segmentationDict[modelNode.GetName()] = segmentationNode
     self.labelRangeInCohort = labelRange
     return True
 
@@ -222,7 +224,7 @@ class DataImporterLogic(ScriptedLoadableModuleLogic):
       return False
 
     # Add to the dicts only if succesful
-    self.segmentationDict[fileName] = segmentationNode
+    self.segmentationDict[segmentationNode.GetName()] = segmentationNode
     self.labelRangeInCohort = labelRange
     return True
 
@@ -341,10 +343,14 @@ class DataImporterLogic(ScriptedLoadableModuleLogic):
     return void
     Note that this is independent of labelRangeInCohort, the keys of the two level dictionary would be:
     [nodeName][SegmentName]
-    SegmentName might not be alphanumerical, create a map self.dictSegmentNamesWithIntegers
-    between strings and ints.
     """
 
+    if not self.segmentationDict:
+      logging.error("Cannot populateTopologyDictionary with empty segmentationDict")
+      return
+
+    print "******populateTopologyDictionary: segmentationDict *****"
+    print self.segmentationDict
     # Create vtk objects that will be used to clean the geometries
     for nodeName in self.segmentationDict:
       # Topology table is a dictionary of dictionaries.
@@ -413,21 +419,6 @@ class DataImporterLogic(ScriptedLoadableModuleLogic):
     consistent, self.inconsistentTopologyDict = self.checkTopologyConsistency(self.topologyDict)
     return consistent, self.inconsistentTopologyDict
 
-  def populateDictSegmentNamesWithIntegers(self):
-    """
-    Populate numberOfDifferentSegments and dictSegmentNamesWithIntegers from existing topologyDict.
-    """
-    if self.topologyDict is None:
-      logging.warning("Cannot populate dictSegmentNamesWithIntegers without topologyDict")
-      return
-    self.numberOfDifferentSegments = 0
-    for nodeName in self.topologyDict:
-      for segmentName in self.topologyDict[nodeName]:
-        if not segmentName in self.dictSegmentNamesWithIntegers:
-          self.numberOfDifferentSegments+=1
-          self.dictSegmentNamesWithIntegers[segmentName] = self.numberOfDifferentSegments
-
-
   def checkTopologyConsistency(self, inputTopologyDictionary):
     """
     Return list with (boolean, dict of dicts of inconsistent entries: { nodeName: {segmentName, inconsistentTopology} } )
@@ -491,16 +482,84 @@ class DataImporterLogic(ScriptedLoadableModuleLogic):
 # DataImporterWidget
 #
 
-class DataImporterWidget(ScriptedLoadableModuleWidget):
+class DataImporterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
   """Uses ScriptedLoadableModuleWidget base class, available at:
   https://github.com/Slicer/Slicer/blob/master/Base/Python/slicer/ScriptedLoadableModule.py
   """
+
+  def __init__(self, parent=None):
+    ScriptedLoadableModuleWidget.__init__(self, parent)
+    VTKObservationMixin.__init__(self)
+    self.logic = None
+    self._parameterNode = None
 
   def resetGlobalVariables(self):
     self.logic.cleanup()
     self.logic = DataImporterLogic()
     self.directoryPath = ''
     self.filteredFilePathsList = list()
+
+  def setParameterNode(self, inputParameterNode):
+    if inputParameterNode == self._parameterNode:
+      return
+
+    if self._parameterNode is not None:
+      self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self.updateGuiFromMRML)
+    if inputParameterNode is not None:
+      self.addObserver(inputParameterNode, vtk.vtkCommand.ModifiedEvent, self.updateGuiFromMRML)
+    self._parameterNode = inputParameterNode
+
+  def setSegmentationDict(self, inputSegmentationDict):
+    """
+    Given an iterable of strings with segmentation ids ['id1', 'id2',]
+    Replace current segmentationDict, and re-populate
+    """
+    self.logic.segmentationDict = inputSegmentationDict
+    self.populate()
+
+  def _setSegmentationDictFromIds(self, segmentationIds):
+    """
+    Given an iterable of strings with segmentation ids ['id1', 'id2',]
+    Set a new segmentationDict.
+    """
+    print "_setSegmentationDictFromIds: ", segmentationIds
+    newSegmentationDict = {}
+    for id in segmentationIds:
+      if id:
+        node = slicer.mrmlScene.GetNodeByID(id)
+        newSegmentationDict[node.GetName()] = node
+
+    self.setSegmentationDict(newSegmentationDict)
+
+
+  def updateGuiFromMRML(self, caller=None, event=None):
+    """
+    Query all the parameters in the parameterNode,
+    and update the GUI state accordingly if something has changed.
+    """
+    print "******* UpdateGuiFromMRML ************"
+    if self._parameterNode is None:
+      return
+    # GetParameters and further parse MRML
+    segmentationIds = [notEmptyId for notEmptyId in self._parameterNode.GetParameter("SegmentationNodeIDs").split(' ') if notEmptyId]
+    # The following calls populate at the end of the pipeline, updating the GUI
+    self._setSegmentationDictFromIds(segmentationIds)
+
+  def updateParameterNodeFromGui(self):
+
+    print "******* UpdateParamNodeFromGUI ************"
+    if self._parameterNode is None:
+      return
+
+    segmentationIds=''
+    for key in self.logic.segmentationDict:
+      if segmentationIds:
+        segmentationIds += ' '
+      segmentationIds += self.logic.segmentationDict[key].GetID()
+    print "******* UpdateParamNodeFromGUI ************"
+    print "segmentationsIds: ", segmentationIds
+    with NodeModify(self._parameterNode):
+      self._parameterNode.SetParameter("SegmentationNodeIDs", segmentationIds)
 
   def setup(self):
     ScriptedLoadableModuleWidget.setup(self)
@@ -513,6 +572,9 @@ class DataImporterWidget(ScriptedLoadableModuleWidget):
     self.filteredFilePathsList = list()
     self.tableWidgetItemDefaultFlags = qt.Qt.NoItemFlags | qt.Qt.ItemIsSelectable | qt.Qt.ItemIsEnabled
     self.displayOnClick = True
+    # We only need to store a tuple of segmentation nodes in the parameterNode.
+    # We can generate dictSegmentation and the rest of variables/tables from there.
+    self.setParameterNode(self.logic.getParameterNode())
 
     # Table columns
     self.subjectsColumnName = 0
@@ -569,6 +631,7 @@ class DataImporterWidget(ScriptedLoadableModuleWidget):
     # Initialize the beginning input type.
     self.onSaveCleanDataCheckBoxToggled()
 
+
   #
   # Reset all the data for data import
   #
@@ -577,6 +640,7 @@ class DataImporterWidget(ScriptedLoadableModuleWidget):
     self.resetSubjectsTable()
     self.resetSegmentsTable()
     self.resetGlobalVariables()
+    self.removeObservers()
 
   def __del__(self):
     self.cleanup()
@@ -884,15 +948,10 @@ class DataImporterWidget(ScriptedLoadableModuleWidget):
 
     return comboBox
 
-  def importFiles(self, filePaths):
+  def populate(self):
     """
-    Use logic.importFiles, populateTopologyDict and populate tables.
+    Requires self.segmentationDict
     """
-
-    if not self.logic.importFiles(filePaths):
-      logging.warning("logic.importFiles issues, see raised errors.")
-      return
-
     # Populate the topology table
     self.logic.populateTopologyDictionary()
     self.logic.populateInconsistentTopologyDict()
@@ -904,8 +963,26 @@ class DataImporterWidget(ScriptedLoadableModuleWidget):
     ######### Populate Tables ##########
     self.populateSubjectsTable()
 
-    self.SubjectsTableWidget.setCurrentCell(0, 0)
-    self.onSubjectsTableWidgetCellClicked(0, 0)
+    rowCount = self.SubjectsTableWidget.rowCount
+    print "**RowCount**: ", rowCount
+
+    if self.SubjectsTableWidget.rowCount:
+      self.SubjectsTableWidget.setCurrentCell(0, 0)
+      self.onSubjectsTableWidgetCellClicked(0, 0)
+
+    # self.updateParameterNodeFromGui()
+
+  def importFiles(self, filePaths):
+    """
+    Use logic.importFiles and populate.
+    """
+
+    if not self.logic.importFiles(filePaths):
+      logging.warning("logic.importFiles issues, see raised errors.")
+      return
+
+    self.populate()
+
 
   '''
   GUI Callback functions
@@ -1034,8 +1111,10 @@ class DataImporterWidget(ScriptedLoadableModuleWidget):
     rowsSegments = self.getRowsFromSelectedIndexes(self.SegmentsTableWidget)
     countSubjects = len(rowsSubjects)
     countSegments = len(rowsSegments)
-    if not countSubjects and not countSegments:
-      pass
+    if countSubjects == 0:
+      self.SubjectsTableWidget.setSortingEnabled(True)
+      self.SegmentsTableWidget.setSortingEnabled(True)
+      return
 
     # Update column indexes (sanity)
     segmentsColumnCount = self.SegmentsTableWidget.columnCount
@@ -1051,9 +1130,9 @@ class DataImporterWidget(ScriptedLoadableModuleWidget):
       self.segmentsColumnTopologyCurrent = 1
       self.segmentsColumnTopologyExpected = 2
 
-    # segmentationNodes = list() 
+    # segmentationNodes = list()
     # segmentationNodes.append(node)
-    for row in rowsSubjects: 
+    for row in rowsSubjects:
       subjectName = self.SubjectsTableWidget.item(row, self.subjectsColumnName).text()
       node = self.logic.segmentationDict[subjectName]
       segmentationDisplayNode = node.GetDisplayNode()
@@ -1062,12 +1141,17 @@ class DataImporterWidget(ScriptedLoadableModuleWidget):
         segmentationDisplayNode.SetAllSegmentsVisibility(True)
         self.center3dView()
 
+    if countSegments == 0:
+      self.SubjectsTableWidget.setSortingEnabled(True)
+      self.SegmentsTableWidget.setSortingEnabled(True)
+      return
+
     subjectName = None
-    for row in rowsSegments: 
+    for row in rowsSegments:
       if hasSegmentsColumnSubjectName:
         subjectName = self.SegmentsTableWidget.item(row, self.segmentsColumnSubjectName).text()
       else:
-        if countSubjects: 
+        if countSubjects:
           subjectName = self.SubjectsTableWidget.item(rowsSubjects[0], self.subjectsColumnName).text()
         else:
           continue
@@ -1318,20 +1402,6 @@ class DataImporterTest(ScriptedLoadableModuleTest):
     self.assertEqual(numberOfModels, len(logic.modelDict.keys()))
 
     logging.info('-- test_importFiles passed! --')
-
-  def test_populateDictSegmentNamesWithIntegers(self):
-    logging.info('-- Starting test_populateDictSegmentNamesWithIntegers --')
-    filePath = os.path.join(self.testDir, self.casesModel[0])
-    logic = DataImporterLogic()
-    logic.importFiles([filePath])
-    logic.populateTopologyDictionary()
-    logic.populateInconsistentTopologyDict()
-    logic.populateDictSegmentNamesWithIntegers()
-    self.assertEqual(len(logic.dictSegmentNamesWithIntegers.keys()), 1)
-    for name in logic.topologyDict:
-      for segmentName in logic.topologyDict[name]:
-        self.assertTrue(segmentName in logic.dictSegmentNamesWithIntegers)
-        self.assertEqual(logic.dictSegmentNamesWithIntegers[segmentName], 1)
 
   def test_computeMode(self):
     exampleDict = {
